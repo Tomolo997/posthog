@@ -63,6 +63,9 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
         updateNode: (payload: PluginUpdatePayload | BatchExportUpdatePayload) => ({
             payload,
         }),
+        createNode: (payload: PluginUpdatePayload | BatchExportUpdatePayload) => ({
+            payload,
+        }),
         setNewConfigurationServiceOrPluginID: (id: number | string | null) => ({ id }),
     }),
     reducers(() => ({
@@ -120,13 +123,14 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
                         return convertToPipelineNode(batchExport, values.stage)
                     } else if (values.maybeNodePlugin) {
                         payload = payload as PluginUpdatePayload
-                        const pluginConfig = await api.pluginConfigs.create(
-                            getPluginConfigFormData(
-                                values.maybeNodePlugin.config_schema,
-                                defaultConfigForPlugin(values.maybeNodePlugin),
-                                payload
-                            )
+                        const formdata = getPluginConfigFormData(
+                            values.maybeNodePlugin.config_schema,
+                            defaultConfigForPlugin(values.maybeNodePlugin),
+                            { ...payload, enabled: true } // Default enable on creation
                         )
+                        formdata.append('plugin', values.maybeNodePlugin.id.toString())
+                        formdata.append('order', '99') // TODO: fix this should be at the end of latest here for transformations
+                        const pluginConfig = await api.pluginConfigs.create(formdata)
                         return convertToPipelineNode(pluginConfig, values.stage)
                     }
                     return null
