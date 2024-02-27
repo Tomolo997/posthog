@@ -22,7 +22,6 @@ import { pipelineDestinationsLogic } from './destinationsLogic'
 import type { pipelineNodeLogicType } from './pipelineNodeLogicType'
 import {
     BatchExportBasedStep,
-    BatchExportDestination,
     convertToPipelineNode,
     PipelineBackend,
     PipelineNode,
@@ -112,7 +111,7 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
                     if (!values.newConfigurationServiceOrPluginID || !values.stage) {
                         return null
                     }
-                    if (values.maybeBatchExportService) {
+                    if (values.nodeBackend === PipelineBackend.BatchExport) {
                         payload = payload as BatchExportUpdatePayload
                         const batchExport = await api.batchExports.create({
                             paused: !payload.enabled,
@@ -240,20 +239,17 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
                 return null
             },
         ],
-        maybeBatchExportService: [
-            (s) => [s.newConfigurationServiceOrPluginID, s.newConfigurationBatchExports],
-            (maybeServiceId, services): BatchExportDestination | null => {
-                if (maybeServiceId) {
-                    return services[maybeServiceId] || null
-                }
-                return null
-            },
-        ],
         newConfigurationBatchExports: [
             (_, p) => [p.stage],
-            (stage): Record<string, BatchExportDestination> => {
+            (stage): Record<string, string> => {
                 if (stage === PipelineStage.Destination) {
-                    return {} // TODO: return all destinations
+                    return {
+                        BigQuery: 'BigQuery',
+                        Postgres: 'PostgreSQL',
+                        Redshift: 'Redshift',
+                        S3: 'S3',
+                        Snowflake: 'Snowflake',
+                    }
                 }
                 return {}
             },
@@ -300,8 +296,8 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
             },
         ],
         savedConfiguration: [
-            (s) => [s.node, s.maybeNodePlugin, s.maybeBatchExportService],
-            (node, maybeNodePlugin, maybeBatchExportService): Record<string, any> | null => {
+            (s) => [s.node, s.maybeNodePlugin],
+            (node, maybeNodePlugin): Record<string, any> | null => {
                 if (node) {
                     return node.backend === PipelineBackend.Plugin
                         ? node.config || defaultConfigForPlugin(node.plugin)
@@ -309,13 +305,6 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
                 }
                 if (maybeNodePlugin) {
                     return defaultConfigForPlugin(maybeNodePlugin)
-                }
-                if (maybeBatchExportService) {
-                    return {
-                        interval: 'hour',
-                        destination: maybeBatchExportService.type,
-                        ...maybeBatchExportService.config,
-                    }
                 }
                 return null
             },

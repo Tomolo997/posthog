@@ -42,9 +42,9 @@ export function PipelineNodeConfiguration(): JSX.Element {
             value: plugin.id,
             label: plugin.name, // TODO: Ideally this would show RenderApp or MinimalAppView
         }))
-        const batchExportsOptions = Object.values(newConfigurationBatchExports).map((service) => ({
-            value: service.id,
-            label: service.name, // TODO: same render with a picture ?
+        const batchExportsOptions = Object.entries(newConfigurationBatchExports).map(([key, name]) => ({
+            value: key,
+            label: name, // TODO: same render with a picture ?
         }))
 
         selector = (
