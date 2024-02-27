@@ -1,5 +1,5 @@
 import { IconLock } from '@posthog/icons'
-import { LemonButton, LemonSelect, LemonSkeleton, Tooltip } from '@posthog/lemon-ui'
+import { LemonButton, LemonInput, LemonSelect, LemonSkeleton, Tooltip } from '@posthog/lemon-ui'
 import { useActions, useValues } from 'kea'
 import { Form } from 'kea-forms'
 import { NotFound } from 'lib/components/NotFound'
@@ -73,8 +73,7 @@ export function PipelineNodeConfiguration(): JSX.Element {
             ) : (
                 <>
                     <Form logic={pipelineNodeLogic} formKey="configuration" className="space-y-3">
-                        {/* TODO: name and description */}
-                        {/* <LemonField
+                        <LemonField
                             name="name"
                             label="Name"
                             info="Customising the name can be useful if multiple instances of the same type are used."
@@ -87,7 +86,7 @@ export function PipelineNodeConfiguration(): JSX.Element {
                             info="Add a description to share context with other team members"
                         >
                             <LemonInput type="text" />
-                        </LemonField> */}
+                        </LemonField>
                         {!isConfigurable ? (
                             <span>This {stage} isn't configurable.</span>
                         ) : maybeNodePlugin ? (
