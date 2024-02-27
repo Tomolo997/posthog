@@ -1,5 +1,5 @@
 import { IconLock } from '@posthog/icons'
-import { LemonButton, LemonInput, LemonSelect, LemonSkeleton, Tooltip } from '@posthog/lemon-ui'
+import { LemonButton, LemonSelect, LemonSkeleton, Tooltip } from '@posthog/lemon-ui'
 import { useActions, useValues } from 'kea'
 import { Form } from 'kea-forms'
 import { NotFound } from 'lib/components/NotFound'
@@ -11,63 +11,49 @@ import { BatchExportConfigurationForm } from 'scenes/batch_exports/batchExportEd
 import { getConfigSchemaArray, isValidField } from 'scenes/pipeline/configUtils'
 import { PluginField } from 'scenes/plugins/edit/PluginField'
 
-import { PipelineStage, PluginType } from '~/types'
+import { PluginType } from '~/types'
 
-import { pipelineDestinationsLogic } from './destinationsLogic'
-import { frontendAppsLogic } from './frontendAppsLogic'
-import { importAppsLogic } from './importAppsLogic'
 import { pipelineNodeLogic } from './pipelineNodeLogic'
-import { pipelineTransformationsLogic } from './transformationsLogic'
-import { PipelineBackend, PipelineNode } from './types'
 
 export function PipelineNodeConfiguration(): JSX.Element {
     const {
-        id,
         stage,
-        newSelected,
         node,
         savedConfiguration,
         configuration,
         isConfigurationSubmitting,
         isConfigurable,
+        newConfigurationPlugins,
+        newConfigurationBatchExports,
+        newConfigurationServiceOrPluginID,
+        isNew,
+        maybeNodePlugin,
     } = useValues(pipelineNodeLogic)
-    const { resetConfiguration, submitConfiguration, setNewSelected, setNewPluginNode } = useActions(pipelineNodeLogic)
+    const { resetConfiguration, submitConfiguration, setNewConfigurationServiceOrPluginID } =
+        useActions(pipelineNodeLogic)
 
     let selector = <></>
-
-    const isNew = id === 'new'
 
     if (isNew) {
         if (!stage) {
             return <NotFound object="pipeline app stage" />
         }
-
-        let plugins: Record<number, PluginType> = {}
-        // TODO: do not allow creating plugin-configs for already existing plugins enabled or disabled
-        if (stage === PipelineStage.Transformation) {
-            plugins = useValues(pipelineTransformationsLogic).plugins
-        } else if (stage === PipelineStage.Destination) {
-            plugins = useValues(pipelineDestinationsLogic).plugins
-        } else if (stage === PipelineStage.SiteApp) {
-            plugins = useValues(frontendAppsLogic).plugins
-        } else if (stage === PipelineStage.ImportApp) {
-            plugins = useValues(importAppsLogic).plugins
-        }
+        const pluginsOptions = Object.values(newConfigurationPlugins).map((plugin) => ({
+            value: plugin.id,
+            label: plugin.name, // TODO: Ideally this would show RenderApp or MinimalAppView
+        }))
+        const batchExportsOptions = Object.values(newConfigurationBatchExports).map((service) => ({
+            value: service.id,
+            label: service.name, // TODO: same render with a picture ?
+        }))
 
         selector = (
             <LemonSelect
-                value={newSelected}
+                value={newConfigurationServiceOrPluginID}
                 onChange={(newValue) => {
-                    setNewSelected(newValue)
-                    if (newValue !== null) {
-                        // TODO: why can this be null anyway
-                        setNewPluginNode(plugins[newValue])
-                    }
+                    setNewConfigurationServiceOrPluginID(newValue) // TODO: this should change the URL so we can link new specific plugin/batch export
                 }}
-                options={Object.values(plugins).map((plugin) => ({
-                    value: plugin.id,
-                    label: plugin.name, // TODO: Ideally this would show RenderApp or MinimalAppView
-                }))}
+                options={[...pluginsOptions, ...batchExportsOptions]}
             />
         )
     }
@@ -75,7 +61,7 @@ export function PipelineNodeConfiguration(): JSX.Element {
     return (
         <div className="space-y-3">
             {selector}
-            {!node ? (
+            {!node && !newConfigurationServiceOrPluginID ? (
                 Array(2)
                     .fill(null)
                     .map((_, index) => (
@@ -87,8 +73,8 @@ export function PipelineNodeConfiguration(): JSX.Element {
             ) : (
                 <>
                     <Form logic={pipelineNodeLogic} formKey="configuration" className="space-y-3">
-                        {/* TODO: prefill from values or plugin name and description */}
-                        <LemonField
+                        {/* TODO: name and description */}
+                        {/* <LemonField
                             name="name"
                             label="Name"
                             info="Customising the name can be useful if multiple instances of the same type are used."
@@ -101,13 +87,13 @@ export function PipelineNodeConfiguration(): JSX.Element {
                             info="Add a description to share context with other team members"
                         >
                             <LemonInput type="text" />
-                        </LemonField>
+                        </LemonField> */}
                         {!isConfigurable ? (
-                            <span>This {node.stage} isn't configurable.</span>
-                        ) : node.backend === PipelineBackend.Plugin ? (
-                            <PluginConfigurationFields node={node} formValues={configuration} />
+                            <span>This {stage} isn't configurable.</span>
+                        ) : maybeNodePlugin ? (
+                            <PluginConfigurationFields plugin={maybeNodePlugin} formValues={configuration} />
                         ) : (
-                            <BatchExportConfigurationFields isNew={false} formValues={configuration} />
+                            <BatchExportConfigurationFields isNew={isNew} formValues={configuration} />
                         )}
                         <div className="flex gap-2">
                             <LemonButton
@@ -134,15 +120,10 @@ export function PipelineNodeConfiguration(): JSX.Element {
     )
 }
 
-function PluginConfigurationFields({
-    node,
-}: {
-    node: PipelineNode & { backend: PipelineBackend.Plugin }
-    formValues: Record<string, any>
-}): JSX.Element {
+function PluginConfigurationFields({ plugin }: { plugin: PluginType; formValues: Record<string, any> }): JSX.Element {
     const { hiddenFields, requiredFields } = useValues(pipelineNodeLogic)
 
-    const configSchemaArray = getConfigSchemaArray(node.plugin.config_schema)
+    const configSchemaArray = getConfigSchemaArray(plugin.config_schema)
     const fields = configSchemaArray.map((fieldConfig, index) => (
         <React.Fragment key={fieldConfig.key || `__key__${index}`}>
             {fieldConfig.key &&
