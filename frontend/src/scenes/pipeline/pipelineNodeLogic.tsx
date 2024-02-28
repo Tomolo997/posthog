@@ -19,7 +19,10 @@ import {
     getPluginConfigFormData,
 } from './configUtils'
 import { pipelineDestinationsLogic } from './destinationsLogic'
+import { frontendAppsLogic } from './frontendAppsLogic'
+import { importAppsLogic } from './importAppsLogic'
 import type { pipelineNodeLogicType } from './pipelineNodeLogicType'
+import { pipelineTransformationsLogic } from './transformationsLogic'
 import {
     BatchExportBasedStep,
     convertToPipelineNode,
@@ -44,18 +47,20 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
     props({} as PipelineNodeLogicProps),
     key(({ id }) => id),
     path((id) => ['scenes', 'pipeline', 'pipelineNodeLogic', id]),
-    connect({
+    connect(() => ({
         values: [
             teamLogic,
             ['currentTeamId'],
             pipelineDestinationsLogic,
-            ['plugins'],
-            // pipelineDestinationsLogic, ['plugins as destinationPlugins'],
-            // pipelineTransformationsLogic, ['plugins as transformationPlugins'],
-            // frontendAppsLogic, ['plugins as frontendAppsPlugins'],
-            // importAppsLogic, ['plugins as importAppsPlugins'],
+            ['plugins as destinationPlugins'],
+            pipelineTransformationsLogic,
+            ['plugins as transformationPlugins'],
+            frontendAppsLogic,
+            ['plugins as frontendAppsPlugins'],
+            importAppsLogic,
+            ['plugins as importAppsPlugins'],
         ],
-    }),
+    })),
     actions({
         setCurrentTab: (tab: PipelineNodeTab = PipelineNodeTab.Configuration) => ({ tab }),
         loadNode: true,
@@ -257,26 +262,27 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
         newConfigurationPlugins: [
             (s, p) => [
                 p.stage,
-                s.plugins,
-                // p.stage, s.destinationPlugins, s.transformationPlugins, s.frontendAppsPlugins, s.importAppsPlugins
+                s.destinationPlugins,
+                s.transformationPlugins,
+                s.frontendAppsPlugins,
+                s.importAppsPlugins,
             ],
             (
                 stage,
-                plugins
-                // stage, destinationPlugins, transformationPlugins, frontendAppsPlugins, importAppsPlugins
+                destinationPlugins,
+                transformationPlugins,
+                frontendAppsPlugins,
+                importAppsPlugins
             ): Record<string, PluginType> => {
-                if (stage === PipelineStage.Destination) {
-                    return plugins
+                if (stage === PipelineStage.Transformation) {
+                    return transformationPlugins
+                } else if (stage === PipelineStage.Destination) {
+                    return destinationPlugins
+                } else if (stage === PipelineStage.SiteApp) {
+                    return frontendAppsPlugins
+                } else if (stage === PipelineStage.ImportApp) {
+                    return importAppsPlugins
                 }
-                // if (stage === PipelineStage.Transformation) {
-                //     return transformationPlugins
-                // } else if (stage === PipelineStage.Destination) {
-                //     return destinationPlugins
-                // } else if (stage === PipelineStage.SiteApp) {
-                //     return frontendAppsPlugins
-                // } else if (stage === PipelineStage.ImportApp) {
-                //     return importAppsPlugins
-                // }
                 return {}
             },
         ],
