@@ -166,7 +166,7 @@ export const pipelineNodeLogic = kea<pipelineNodeLogicType>([
     })),
     forms(({ props, values, asyncActions }) => ({
         configuration: {
-            defaults: {} as Record<string, any>,
+            defaults: { name: '', description: '' } as Record<string, any>,
             errors: (form) => {
                 if (values.nodeBackend === PipelineBackend.BatchExport) {
                     return batchExportFormFields(props.id === 'new', form as any, { isPipeline: true })
