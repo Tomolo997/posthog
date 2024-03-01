@@ -703,6 +703,7 @@ async def test_delete_squashed_person_overrides_from_clickhouse(
 
     await activity_environment.run(optimize_person_distinct_id_overrides, query_inputs)
     await activity_environment.run(prepare_dictionary, query_inputs)
+    await activity_environment.run(squash_events_partition, query_inputs)
 
     try:
         await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
@@ -750,6 +751,7 @@ async def test_delete_squashed_person_overrides_from_clickhouse_within_grace_per
 
     await activity_environment.run(optimize_person_distinct_id_overrides, query_inputs)
     await activity_environment.run(prepare_dictionary, query_inputs)
+    await activity_environment.run(squash_events_partition, query_inputs)
 
     # Assume it will take less than 120 seconds to run the rest of the test.
     # So the row we have added should not be deleted like all the others as its _timestamp
@@ -798,6 +800,8 @@ async def test_delete_squashed_person_overrides_from_clickhouse_dry_run(
     await clickhouse_client.execute_query(
         "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", not_overriden_person
     )
+    await activity_environment.run(prepare_dictionary, query_inputs)
+    await activity_environment.run(squash_events_partition, query_inputs)
 
     await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
 

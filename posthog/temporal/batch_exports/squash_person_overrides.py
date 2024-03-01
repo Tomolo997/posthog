@@ -77,17 +77,24 @@ DROP DICTIONARY {database}.{dictionary_name} ON CLUSTER {cluster}
 """
 
 CREATE_JOIN_TABLE_FOR_DELETES_QUERY = """
-CREATE TABLE {database}.person_overrides_to_delete ON CLUSTER {cluster}
+CREATE OR REPLACE TABLE {database}.person_overrides_to_delete ON CLUSTER {cluster}
 ENGINE = Join(ANY, LEFT, team_id, distinct_id) AS
 SELECT
-    team_id, distinct_id, groupUniqArray(_partition_id) AS partitions
+    team_id,
+    distinct_id,
+    sum(person_id != dictGet('{database}.{dictionary_name}', 'person_id', (team_id, distinct_id))) AS total_unsquashed,
+    sum(person_id = dictGet('{database}.{dictionary_name}', 'person_id', (team_id, distinct_id))) AS total_squashed
 FROM
     {database}.sharded_events
 WHERE
     dictHas('{database}.{dictionary_name}', (team_id, distinct_id))
 GROUP BY
     team_id, distinct_id
+HAVING
+    total_unsquashed = 0
+    AND total_squashed > 0
 """
+
 
 DROP_JOIN_TABLE_FOR_DELETES_QUERY = """
 DROP TABLE IF EXISTS {database}.person_overrides_to_delete
@@ -96,13 +103,16 @@ DROP TABLE IF EXISTS {database}.person_overrides_to_delete
 DELETE_SQUASHED_PERSON_OVERRIDES_QUERY = """
 ALTER TABLE
     {database}.person_distinct_id_overrides
-DELETE WHERE
-    hasAll(joinGet('{database}.person_overrides_to_delete', 'partitions', team_id, distinct_id), %(partition_ids)s)
-    AND NOW() - _timestamp > %(grace_period)s
 ON CLUSTER
     {cluster}
+DELETE WHERE
+    -- The two first predicates are redundant as the join table already excludes any rows that don't match.
+    -- However, there is no joinHas, so we are forced to grab something.
+    joinGet('{database}.person_overrides_to_delete', 'total_unsquashed', team_id, distinct_id) = 0
+    AND joinGet('{database}.person_overrides_to_delete', 'total_squashed', team_id, distinct_id) > 0
+    AND NOW() - _timestamp > %(grace_period)s
 SETTINGS
-    max_execution_time=0
+    max_execution_time = 0
 """
 
 
