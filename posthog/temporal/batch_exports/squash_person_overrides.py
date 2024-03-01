@@ -51,11 +51,7 @@ WHERE is_done = 0
 AND table = 'sharded_events'
 AND database = '{database}'
 AND command LIKE
-    'UPDATE person_id = dictGet(''{database}.{dictionary_name}'', ''person_id'', (team_id, distinct_id)) IN PARTITION '''{partition_id}''%'
-"""
-
-DROP_DICTIONARY_QUERY = """
-DROP DICTIONARY {database}.{dictionary_name} ON CLUSTER {cluster}
+    'UPDATE person_id = dictGet(''{database}.person_distinct_id_overrides_dict'', ''person_id'', (team_id, distinct_id)) IN PARTITION '''{partition_id}''%'
 """
 
 CREATE_JOIN_TABLE_FOR_DELETES_QUERY = """
@@ -66,7 +62,7 @@ SELECT
 FROM
     {database}.sharded_events
 WHERE
-    dictHas('{database}.{dictionary_name}', (team_id, distinct_id))
+    dictHas('{database}.person_distinct_id_overrides_dict', (team_id, distinct_id))
 GROUP BY
     team_id, distinct_id
 """
