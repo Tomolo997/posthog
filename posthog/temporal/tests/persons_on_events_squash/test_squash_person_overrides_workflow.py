@@ -1,6 +1,5 @@
 import operator
 import random
-import string
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import NamedTuple, TypedDict
@@ -14,13 +13,15 @@ from temporalio.client import Client
 from temporalio.testing import ActivityEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from posthog.models.person.sql import PERSON_DISTINCT_ID_OVERRIDES_TABLE_SQL
+from posthog.models.person.sql import (
+    CREATE_PERSON_DISTINCT_ID_OVERRIDES_DICTIONARY,
+    PERSON_DISTINCT_ID_OVERRIDES_TABLE_SQL,
+)
 from posthog.temporal.batch_exports.squash_person_overrides import (
     QueryInputs,
     SquashPersonOverridesInputs,
     SquashPersonOverridesWorkflow,
     delete_squashed_person_overrides_from_clickhouse,
-    drop_dictionary,
     optimize_person_distinct_id_overrides,
     prepare_dictionary,
     squash_events_partition,
@@ -67,6 +68,7 @@ async def ensure_database_tables(clickhouse_client, django_db_setup):
     person_distinct_id_overrides table in one way or another.
     """
     await clickhouse_client.execute_query(PERSON_DISTINCT_ID_OVERRIDES_TABLE_SQL())
+    await clickhouse_client.execute_query(CREATE_PERSON_DISTINCT_ID_OVERRIDES_DICTIONARY)
 
     yield
 
@@ -107,12 +109,22 @@ async def person_overrides_data(clickhouse_client):
             all_test_values.append(values)
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", *all_test_values
+        "INSERT INTO {database}.person_distinct_id_overrides FORMAT JSONEachRow".format(
+            database=settings.CLICKHOUSE_DATABASE
+        ),
+        *all_test_values,
     )
 
     yield person_overrides
 
-    await clickhouse_client.execute_query("TRUNCATE TABLE person_distinct_id_overrides")
+    await clickhouse_client.execute_query(
+        "TRUNCATE TABLE {database}.person_distinct_id_overrides".format(database=settings.CLICKHOUSE_DATABASE)
+    )
+    await clickhouse_client.execute_query(
+        "SYSTEM RELOAD DICTIONARY {database}.person_distinct_id_overrides_dict".format(
+            database=settings.CLICKHOUSE_DATABASE
+        )
+    )
 
 
 @pytest.fixture
@@ -137,8 +149,7 @@ async def optimized_person_overrides(activity_environment, query_inputs):
 
 @pytest.mark.django_db
 async def test_prepare_dictionary(query_inputs, activity_environment, person_overrides_data, clickhouse_client):
-    """Test a DICTIONARY is created by the prepare_dictionary activity."""
-    query_inputs.dictionary_name = "fancy_dictionary"
+    """Test a DICTIONARY is populated by the prepare_dictionary activity."""
     query_inputs.dry_run = False
 
     await activity_environment.run(prepare_dictionary, query_inputs)
@@ -150,7 +161,7 @@ async def test_prepare_dictionary(query_inputs, activity_environment, person_ove
                 SELECT
                     distinct_id,
                     dictGet(
-                        '{settings.CLICKHOUSE_DATABASE}.fancy_dictionary',
+                        '{settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides_dict',
                         'person_id',
                         (team_id, distinct_id)
                     ) AS person_id
@@ -165,8 +176,6 @@ async def test_prepare_dictionary(query_inputs, activity_environment, person_ove
 
             assert ids[0] == person_override.distinct_id
             assert UUID(ids[1]) == person_override.person_id
-
-    await activity_environment.run(drop_dictionary, query_inputs)
 
 
 @pytest_asyncio.fixture
@@ -189,7 +198,8 @@ async def older_overrides(person_overrides_data, clickhouse_client):
             older_values_to_insert.append(values)
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", *older_values_to_insert
+        f"INSERT INTO {settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides FORMAT JSONEachRow",
+        *older_values_to_insert,
     )
 
     yield older_overrides
@@ -215,7 +225,8 @@ async def newer_overrides(person_overrides_data, clickhouse_client):
             newer_values_to_insert.append(values)
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", *newer_values_to_insert
+        f"INSERT INTO {settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides FORMAT JSONEachRow",
+        *newer_values_to_insert,
     )
 
     yield newer_overrides
@@ -237,7 +248,6 @@ async def test_prepare_dictionary_with_older_overrides_present(
     This test is a bit deceptive as optimizing the table is what takes care of older overrides,
     not the dictionary creation process.
     """
-    query_inputs.dictionary_name = "fancy_dictionary"
     query_inputs.dry_run = False
 
     await activity_environment.run(optimize_person_distinct_id_overrides, query_inputs)
@@ -250,7 +260,7 @@ async def test_prepare_dictionary_with_older_overrides_present(
                 SELECT
                     distinct_id,
                     dictGet(
-                        '{settings.CLICKHOUSE_DATABASE}.fancy_dictionary',
+                        '{settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides_dict',
                         'person_id',
                         (team_id, distinct_id)
                     ) AS person_id
@@ -266,8 +276,6 @@ async def test_prepare_dictionary_with_older_overrides_present(
             assert ids[0] == person_override.distinct_id
             assert UUID(ids[1]) == person_override.person_id
 
-    await activity_environment.run(drop_dictionary, query_inputs)
-
 
 @pytest.mark.django_db
 async def test_prepare_dictionary_with_newer_overrides_after_create(
@@ -281,7 +289,6 @@ async def test_prepare_dictionary_with_newer_overrides_after_create(
     The dictionary should be created with a LIFETIME(0) setting to avoid pulling new updates,
     and the dictionary remaining static.
     """
-    query_inputs.dictionary_name = "fancy_dictionary"
     query_inputs.dry_run = False
 
     await activity_environment.run(prepare_dictionary, query_inputs)
@@ -300,7 +307,8 @@ async def test_prepare_dictionary_with_newer_overrides_after_create(
             newer_values_to_insert.append(values)
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", *newer_values_to_insert
+        f"INSERT INTO {settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides FORMAT JSONEachRow",
+        *newer_values_to_insert,
     )
 
     # Ensure new updates have landed
@@ -313,7 +321,7 @@ async def test_prepare_dictionary_with_newer_overrides_after_create(
                 SELECT
                     distinct_id,
                     dictGet(
-                        '{settings.CLICKHOUSE_DATABASE}.fancy_dictionary',
+                        '{settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides_dict',
                         'person_id',
                         (team_id, distinct_id)
                     ) AS person_id
@@ -328,42 +336,6 @@ async def test_prepare_dictionary_with_newer_overrides_after_create(
 
             assert ids[0] == person_override.distinct_id
             assert UUID(ids[1]) == person_override.person_id
-
-    await activity_environment.run(drop_dictionary, query_inputs)
-
-
-@pytest.mark.django_db
-async def test_drop_dictionary(query_inputs, activity_environment, person_overrides_data, clickhouse_client):
-    """Test a DICTIONARY is dropped by drop_join_table activity."""
-    query_inputs.dictionary_name = "distinguished_dictionary"
-    query_inputs.dry_run = False
-    query_inputs.wait_for_mutations = True
-
-    # Ensure we are starting from scratch
-    await clickhouse_client.execute_query(
-        f"DROP DICTIONARY IF EXISTS {settings.CLICKHOUSE_DATABASE}.{query_inputs.dictionary_name}"
-    )
-    response = await clickhouse_client.read_query(
-        f"EXISTS DICTIONARY {settings.CLICKHOUSE_DATABASE}.{query_inputs.dictionary_name}"
-    )
-    before = int(response.splitlines()[0])
-    assert before == 0
-
-    await activity_environment.run(prepare_dictionary, query_inputs)
-
-    response = await clickhouse_client.read_query(
-        f"EXISTS DICTIONARY {settings.CLICKHOUSE_DATABASE}.{query_inputs.dictionary_name}"
-    )
-    during = int(response.splitlines()[0])
-    assert during == 1
-
-    await activity_environment.run(drop_dictionary, query_inputs)
-
-    response = await clickhouse_client.read_query(
-        f"EXISTS DICTIONARY {settings.CLICKHOUSE_DATABASE}.{query_inputs.dictionary_name}"
-    )
-    after = int(response.splitlines()[0])
-    assert after == 0
 
 
 get_team_id_old_person_id = operator.attrgetter("team_id", "old_person_id")
@@ -454,40 +426,24 @@ async def assert_events_have_been_overriden(overriden_events, person_overrides):
             assert new_event["person_id"] == new_person_id[0]
 
 
-@pytest.fixture()
-def dictionary_name(request) -> str:
-    try:
-        return request.param
-    except AttributeError:
-        return "exciting_dictionary"
-
-
 @pytest_asyncio.fixture
-async def overrides_dictionary(optimized_person_overrides, query_inputs, activity_environment, dictionary_name):
-    """Create a person overrides dictionary for testing.
+async def overrides_dictionary(optimized_person_overrides, query_inputs, activity_environment):
+    """Populate a person overrides dictionary for testing.
 
-    Some activities that run in unit tests depend on the overrides dictionary. We create the dictionary in
-    this fixture to avoid having to copy the creation activity on every unit test that needs it. This way,
+    Some activities that run in unit tests depend on the overrides dictionary. We reload the dictionary in
+    this fixture to avoid having to copy the reload activity on every unit test that needs it. This way,
     we can keep the unit tests centered around only the activity they are testing. The tests that run the
     entire Workflow will already include these steps as part of the workflow, so the fixture is not needed.
     """
-    query_inputs.dictionary_name = dictionary_name
     query_inputs.dry_run = False
     query_inputs.wait_for_mutations = True
 
     await activity_environment.run(prepare_dictionary, query_inputs)
 
-    yield dictionary_name
-
-    await activity_environment.run(drop_dictionary, query_inputs)
+    yield "person_distinct_id_overrides_dict"
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "dictionary_name",
-    [f"squash_events_partition_dictionary_{''.join(random.choices(string.ascii_letters, k=6))}"],
-    indirect=True,
-)
 async def test_squash_events_partition(
     overrides_dictionary,
     query_inputs,
@@ -503,13 +459,12 @@ async def test_squash_events_partition(
     match the override_person_id associated with the old_person_id they used to be set to.
     """
 
-    query_inputs.dictionary_name = overrides_dictionary
     query_inputs.partition_ids = ["202001"]
     query_inputs.dry_run = False
     query_inputs.wait_for_mutations = True
 
     await clickhouse_client.execute_query(
-        f"SYSTEM RELOAD DICTIONARY {overrides_dictionary}",
+        f"SYSTEM RELOAD DICTIONARY {settings.CLICKHOUSE_DATABASE}.{overrides_dictionary}",
     )
 
     await activity_environment.run(squash_events_partition, query_inputs)
@@ -518,11 +473,6 @@ async def test_squash_events_partition(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "dictionary_name",
-    [f"squash_events_partition_dictionary_dry_run_{''.join(random.choices(string.ascii_letters, k=6))}"],
-    indirect=True,
-)
 async def test_squash_events_partition_dry_run(
     overrides_dictionary,
     query_inputs,
@@ -532,13 +482,12 @@ async def test_squash_events_partition_dry_run(
     clickhouse_client,
 ):
     """Test events are not squashed by running squash_events_partition with dry_run=True."""
-    query_inputs.dictionary_name = overrides_dictionary
     query_inputs.partition_ids = ["202001"]
     query_inputs.wait_for_mutations = True
     query_inputs.dry_run = True
 
     await clickhouse_client.execute_query(
-        f"SYSTEM RELOAD DICTIONARY {overrides_dictionary}",
+        f"SYSTEM RELOAD DICTIONARY {settings.CLICKHOUSE_DATABASE}.{overrides_dictionary}",
     )
 
     await activity_environment.run(squash_events_partition, query_inputs)
@@ -563,14 +512,8 @@ async def test_squash_events_partition_dry_run(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "dictionary_name",
-    [f"squash_events_partition_dictionary_older_{''.join(random.choices(string.ascii_letters, k=6))}"],
-    indirect=True,
-)
 async def test_squash_events_partition_with_older_overrides(
     query_inputs,
-    dictionary_name,
     activity_environment,
     person_overrides_data,
     events_to_override,
@@ -584,7 +527,6 @@ async def test_squash_events_partition_with_older_overrides(
     could be duplicate overrides present, either in the partition we are currently working
     with as well as older ones.
     """
-    query_inputs.dictionary_name = dictionary_name
     query_inputs.partition_ids = ["202001"]
     query_inputs.dry_run = False
     query_inputs.wait_for_mutations = True
@@ -596,15 +538,8 @@ async def test_squash_events_partition_with_older_overrides(
 
     await assert_events_have_been_overriden(events_to_override, person_overrides_data)
 
-    await activity_environment.run(drop_dictionary, query_inputs)
-
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "dictionary_name",
-    [f"squash_events_partition_dictionary_newer_{''.join(random.choices(string.ascii_letters, k=6))}"],
-    indirect=True,
-)
 async def test_squash_events_partition_with_newer_overrides(
     query_inputs,
     activity_environment,
@@ -622,13 +557,12 @@ async def test_squash_events_partition_with_newer_overrides(
     could be duplicate overrides present, either in the partition we are currently working
     with as well as newer ones.
     """
-    query_inputs.dictionary_name = overrides_dictionary
     query_inputs.partition_ids = ["202001"]
     query_inputs.dry_run = False
     query_inputs.wait_for_mutations = True
 
     await clickhouse_client.execute_query(
-        f"SYSTEM RELOAD DICTIONARY {overrides_dictionary}",
+        f"SYSTEM RELOAD DICTIONARY {settings.CLICKHOUSE_DATABASE}.{overrides_dictionary}",
     )
 
     await activity_environment.run(squash_events_partition, query_inputs)
@@ -637,11 +571,6 @@ async def test_squash_events_partition_with_newer_overrides(
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize(
-    "dictionary_name",
-    [f"squash_events_partition_dictionary_limited_{''.join(random.choices(string.ascii_letters, k=6))}"],
-    indirect=True,
-)
 async def test_squash_events_partition_with_limited_team_ids(
     query_inputs,
     overrides_dictionary,
@@ -652,14 +581,13 @@ async def test_squash_events_partition_with_limited_team_ids(
 ):
     """Test events are properly squashed when we specify team_ids."""
     random_team = random.choice(list(person_overrides_data.keys()))
-    query_inputs.dictionary_name = overrides_dictionary
     query_inputs.partition_ids = ["202001"]
     query_inputs.dry_run = False
     query_inputs.team_ids = [random_team]
     query_inputs.wait_for_mutations = True
 
     await clickhouse_client.execute_query(
-        f"SYSTEM RELOAD DICTIONARY {overrides_dictionary}",
+        f"SYSTEM RELOAD DICTIONARY {settings.CLICKHOUSE_DATABASE}.{overrides_dictionary}",
     )
 
     await activity_environment.run(squash_events_partition, query_inputs)
@@ -698,16 +626,14 @@ async def test_delete_squashed_person_overrides_from_clickhouse(
     }
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", not_overriden_person
+        f"INSERT INTO {settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides FORMAT JSONEachRow",
+        not_overriden_person,
     )
 
     await activity_environment.run(optimize_person_distinct_id_overrides, query_inputs)
     await activity_environment.run(prepare_dictionary, query_inputs)
 
-    try:
-        await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
-    finally:
-        await activity_environment.run(drop_dictionary, query_inputs)
+    await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
 
     response = await clickhouse_client.read_query(
         "SELECT team_id, distinct_id, person_id FROM person_distinct_id_overrides"
@@ -745,7 +671,8 @@ async def test_delete_squashed_person_overrides_from_clickhouse_within_grace_per
     }
 
     await clickhouse_client.execute_query(
-        "INSERT INTO person_distinct_id_overrides FORMAT JSONEachRow", not_deleted_person
+        f"INSERT INTO {settings.CLICKHOUSE_DATABASE}.person_distinct_id_overrides FORMAT JSONEachRow",
+        not_deleted_person,
     )
 
     await activity_environment.run(optimize_person_distinct_id_overrides, query_inputs)
@@ -756,11 +683,7 @@ async def test_delete_squashed_person_overrides_from_clickhouse_within_grace_per
     # was just computed from datetime.now.
     query_inputs.delete_grace_period_seconds = 120
 
-    try:
-        await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
-
-    finally:
-        await activity_environment.run(drop_dictionary, query_inputs)
+    await activity_environment.run(delete_squashed_person_overrides_from_clickhouse, query_inputs)
 
     response = await clickhouse_client.read_query(
         "SELECT team_id, distinct_id, person_id, _timestamp FROM person_distinct_id_overrides"
@@ -834,7 +757,6 @@ async def test_squash_person_overrides_workflow(
         workflows=[SquashPersonOverridesWorkflow],
         activities=[
             delete_squashed_person_overrides_from_clickhouse,
-            drop_dictionary,
             optimize_person_distinct_id_overrides,
             prepare_dictionary,
             squash_events_partition,
@@ -850,7 +772,7 @@ async def test_squash_person_overrides_workflow(
 
     await assert_events_have_been_overriden(events_to_override, person_overrides_data)
 
-    response = await clickhouse_client.read_query("SELECT team_id, old_person_id FROM person_overrides")
+    response = await clickhouse_client.read_query("SELECT team_id, distinct_id FROM person_distinct_id_overrides")
     rows = response.splitlines()
     assert len(rows) == 0
 
@@ -879,7 +801,6 @@ async def test_squash_person_overrides_workflow_with_newer_overrides(
         workflows=[SquashPersonOverridesWorkflow],
         activities=[
             delete_squashed_person_overrides_from_clickhouse,
-            drop_dictionary,
             optimize_person_distinct_id_overrides,
             prepare_dictionary,
             squash_events_partition,
@@ -921,7 +842,6 @@ async def test_squash_person_overrides_workflow_with_limited_team_ids(
         workflows=[SquashPersonOverridesWorkflow],
         activities=[
             delete_squashed_person_overrides_from_clickhouse,
-            drop_dictionary,
             optimize_person_distinct_id_overrides,
             prepare_dictionary,
             squash_events_partition,
